@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Run Tracker — Graphs & Splits</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+<style>
+body { font-family: Arial, sans-serif; margin:0; padding:12px; background:#f7f7f7; color:#111; }
+h1 { text-align:center; color:#0a4; margin:0 0 10px 0; }
+.controls { text-align:center; margin-bottom:8px; }
+button { margin:6px 6px; padding:10px 14px; font-size:15px; border-radius:7px; border:none; background:#007bff; color:white; cursor:pointer; }
+button.secondary { background:#6c757d; }
+#map { height:360px; border-radius:8px; overflow:hidden; border:1px solid #ddd; margin-bottom:10px; position:relative; }
+.leaflet-top.leaflet-right .map-info { margin-top:8px; }
+.map-info {
+  background: rgba(255,255,255,0.95);
+  padding:8px 10px;
+  border-radius:6px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.12);
+  font-size:13px;
+  min-width:150px;
+}
+.map-info b { display:block; margin-bottom:4px; }
+.tabs { display:flex; margin-bottom:10px; }
+.tab { flex:1; padding:10px; text-align:center; cursor:pointer; background:#eee; border-radius:6px 6px 0 0; margin-right:2px; }
+.tab.active { background:#fff; border-bottom:1px solid #fff; }
+.tab-content { background:#fff; border-radius:0 0 8px 8px; padding:10px; min-height:200px; border:1px solid #ddd; }
+.stats-row { display:flex; flex-wrap:wrap; gap:8px; justify-content:center; }
+.stat { min-width:110px; padding:8px 10px; border-radius:6px; background:#fafafa; font-size:14px; text-align:center; box-shadow:0 0 0 1px rgba(0,0,0,0.03) inset; }
+#splitsTable { width:100%; border-collapse:collapse; font-size:13px; }
+#splitsTable th, #splitsTable td { border:1px solid #eee; padding:8px; text-align:center; }
+#splitsTable th { background:#f3f3f3; font-weight:600; }
+.chart-wrap { width:100%; height:200px; margin-bottom:12px; }
+canvas.chart-canvas { width:100% !important; height:100% !important; display:block; }
+.gps-legend { font-size:12px; margin-top:6px; color:#333; }
+.gps-badge { display:inline-block; padding:3px 7px; border-radius:999px; font-weight:600; margin-left:6px; }
+.gps-verygood { background:#2ecc71; color:#fff; }
+.gps-good { background:#f1c40f; color:#fff; }
+.gps-fair { background:#e67e22; color:#fff; }
+.gps-poor { background:#e74c3c; color:#fff; }
+@media (max-width:520px){ #map{height:240px;} .stat{min-width:90px; font-size:13px;} }
+</style>
+</head>
+<body>
+
+<h1>🏃 Run Tracker</h1>
+
+<div class="controls">
+  <button id="btnStart">▶ Start</button>
+  <button id="btnPause" class="secondary">⏸ Pause</button>
+  <button id="btnReset" class="secondary">🔄 Reset</button>
+  <button id="btnSave">📸 Save Summary</button>
+</div>
+
+<div id="map"></div>
+
+<div class="tabs">
+  <div class="tab active" data-tab="stats">Stats</div>
+  <div class="tab" data-tab="graphs">Graphs</div>
+  <div class="tab" data-tab="splits">Splits</div>
+</div>
+
+<div id="stats" class="tab-content">
+  <div class="stats-row">
+    <div class="stat">Time<br><strong id="time">0:00</strong></div>
+    <div class="stat">Distance<br><strong id="distance">0.00</strong> km</div>
+    <div class="stat">Live Pace<br><strong id="livepace">0:00</strong> min/km</div>
+    <div class="stat">Avg Pace<br><strong id="avgpace">0:00</strong> min/km</div>
+    <div class="stat">Steps<br><strong id="steps">0</strong></div>
+    <div class="stat">Avg Cadence<br><strong id="cadence">0</strong> spm</div>
+    <div class="stat">Avg Stride<br><strong id="stride">0</strong> cm</div>
+    <div class="stat">Elev Gain<br><strong id="elevation">0</strong> m</div>
+  </div>
+</div>
+
+<div id="graphs" class="tab-content" style="display:none;">
+  <div class="chart-wrap"><canvas id="distanceChart" class="chart-canvas"></canvas></div>
+  <div class="chart-wrap"><canvas id="timeChart" class="chart-canvas"></canvas></div>
+</div>
+
+<div id="splits" class="tab-content" style="display:none;">
+  <div id="splitsList"><em>No splits yet</em></div>
+</div>
+
+<!-- Scripts -->
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://unpkg.com/leaflet-image/leaflet-image.js"></script>
+<script>
+/* --------------------------
+   Map
+-------------------------- */
+let map = L.map('map', { attributionControl:false }).setView([20.5937,78.9629],5);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{ maxZoom:19 }).addTo(map);
+let path = L.polyline([], { color:'red', weight:4, opacity:0.9 }).addTo(map);
+
+let gpsMarker = null;
+let accuracyCircle = null;
+let gpsInfoControl = null;
+let lastReverseGeocodeTs = 0;
+const REVERSE_GEOCODE_MIN_MS = 15000; // don't call reverse geocode more than once every 15s
+
+// Create a map control for GPS info (accuracy, strength, place name)
+gpsInfoControl = L.control({ position: 'topright' });
+gpsInfoControl.onAdd = function () {
+  const div = L.DomUtil.create('div', 'map-info');
+  div.innerHTML = `
+    <b>GPS</b>
+    <div>Accuracy: <span id="gpsAccuracy">—</span> m <span id="gpsBadge" class="gps-badge"></span></div>
+    <div>Strength: <span id="gpsStrength">—</span></div>
+    <div>Place: <span id="gpsPlace">—</span></div>
+    <div class="gps-legend"><small>Accuracy circle shown on map</small></div>
+  `;
+  // prevent map interactions when hovering the control
+  L.DomEvent.disableClickPropagation(div);
+  return div;
+};
+gpsInfoControl.addTo(map);
+
+/* --------------------------
+   State
+-------------------------- */
+let running=false, paused=false, startTime=0, elapsed=0, timer=null;
+let lastPos=null, lastUpdateTime=null;
+let gpsDistance=0, blendedDistance=0;
+let prevBlendedDistance=0, prevElapsedTime=0, prevStepCount=0;
+let stepCount=0, lastStepTime=0, lastAccel=0;
+let splits=[], lastSplit=0, lastSplitTime=0;
+let defaultStride=0.78, estimatedStride=defaultStride;
+let elevationGain=0, lastAltitude=null;
+let watchId=null;
+let recentDistances=[]; // stores {d (meters), t (ms), ts (timestamp ms)} for live pace by time-window
+
+// CONFIG: tuned to avoid indoors jitter
+const LIVE_PACE_WINDOW_SEC = 10; // compute live pace based on last 10 seconds
+const MIN_MOVE_THRESHOLD_M = 1.0; // ignore movements smaller than this (meters) — raised to avoid jitter
+const MAX_VALID_SPEED_MPS = 6.0; // ignore implausible updates faster than this
+const MAX_ACCEPTABLE_ACCURACY_M = 20; // ignore updates with accuracy worse than this
+
+/* --------------------------
+   Charts
+-------------------------- */
+const distanceCtx=document.getElementById('distanceChart').getContext('2d');
+const timeCtx=document.getElementById('timeChart').getContext('2d');
+
+const distanceChart = new Chart(distanceCtx,{
+  type:'line',
+  data:{ labels:[], datasets:[{ label:'Pace (min/km)', data:[], borderColor:'#1f77b4', tension:0.3, fill:false }] },
+  options:{ responsive:true, maintainAspectRatio:false,
+    scales:{ x:{ title:{ display:true, text:'Distance (m)'} }, y:{ title:{ display:true, text:'Pace (min/km)'} } }
+  }
+});
+const timeChart = new Chart(timeCtx,{
+  type:'line',
+  data:{ labels:[], datasets:[{ label:'Pace (min/km)', data:[], borderColor:'#2ca02c', tension:0.3, fill:false }] },
+  options:{ responsive:true, maintainAspectRatio:false,
+    scales:{ x:{ title:{ display:true, text:'Time (min)'} }, y:{ title:{ display:true, text:'Pace (min/km)'} } }
+  }
+});
+
+/* --------------------------
+   Tabs
+-------------------------- */
+document.querySelectorAll('.tab').forEach(tab=>{
+  tab.onclick=()=>{
+    document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c=>c.style.display='none');
+    tab.classList.add('active');
+    const el=document.getElementById(tab.dataset.tab);
+    el.style.display='block';
+    if(tab.dataset.tab==='graphs'){
+      setTimeout(()=>{ distanceChart.resize(); distanceChart.update(); timeChart.resize(); timeChart.update(); },150);
+    }
+    if(tab.dataset.tab==='stats') setTimeout(()=>map.invalidateSize(),200);
+  }
+});
+
+/* --------------------------
+   Helpers
+-------------------------- */
+function pad2(n){ return (n<10?'0':'')+n; }
+function formatSeconds(sec){ sec=Math.round(sec); let m=Math.floor(sec/60), s=sec%60; return pad2(m)+':'+pad2(s); }
+function mmssFromMinutes(mins){ let m=Math.floor(mins), s=Math.round((mins-m)*60); return pad2(m)+':'+pad2(s); }
+
+function getStrengthLabelFromAccuracy(acc){
+  if(acc === null || typeof acc === 'undefined') return { label:'Unknown', cls:'' };
+  if(acc <= 5) return { label: 'Excellent', cls: 'gps-verygood' };
+  if(acc <= 10) return { label: 'Good', cls: 'gps-good' };
+  if(acc <= 20) return { label: 'Fair', cls: 'gps-fair' };
+  return { label: 'Poor', cls: 'gps-poor' };
+}
+
+/* --------------------------
+   UI
+-------------------------- */
+function updateUIAll(){
+  document.getElementById('time').innerText=formatSeconds(elapsed/1000);
+  document.getElementById('distance').innerText=(blendedDistance/1000).toFixed(2);
+
+  let avgPace=(blendedDistance>0)?(elapsed/60000)/(blendedDistance/1000):0;
+  document.getElementById('avgpace').innerText=avgPace>0?mmssFromMinutes(avgPace):'0:00';
+
+  // Live pace: compute over last LIVE_PACE_WINDOW_SEC seconds (time-based window)
+  let nowTs = Date.now();
+  let windowMs = LIVE_PACE_WINDOW_SEC*1000;
+  let distSum = 0, timeSum = 0;
+  for(let i=recentDistances.length-1;i>=0;i--){
+    const item = recentDistances[i];
+    const age = nowTs - item.ts;
+    if(age <= windowMs){
+      distSum += item.d;
+      timeSum += item.t;
+    } else {
+      // partial overlap (rare) - approximate proportion
+      const overlap = Math.max(0, windowMs - (nowTs - item.ts) + item.t);
+      if(overlap>0 && item.t>0){
+        const frac = overlap / item.t;
+        distSum += item.d * frac;
+        timeSum += item.t * frac;
+      }
+      break;
+    }
+  }
+  let livePace = avgPace;
+  if(distSum>0 && timeSum>0){
+    livePace = (timeSum/60000)/(distSum/1000); // min/km
+  }
+  document.getElementById('livepace').innerText=livePace>0?mmssFromMinutes(livePace):'0:00';
+
+  document.getElementById('steps').innerText=stepCount;
+  document.getElementById('cadence').innerText=Math.round(elapsed>0?stepCount/(elapsed/60000):0);
+  document.getElementById('stride').innerText=Math.round(stepCount>0?blendedDistance/stepCount*100:0);
+  document.getElementById('elevation').innerText=Math.round(elevationGain);
+}
+
+function renderSplits(){
+  if(splits.length===0){
+    document.getElementById('splitsList').innerHTML='<em>No splits yet</em>';
+    return;
+  }
+  // Build table: Distance (m) | Time (s) | Steps
+  let html = '<table id="splitsTable"><thead><tr><th>Distance (m)</th><th>Time (s)</th><th>Steps</th></tr></thead><tbody>';
+  // show splits oldest first (ascending distance)
+  for(let i=0;i<splits.length;i++){
+    const s = splits[i];
+    html += `<tr><td>${s.m}</td><td>${Math.round(s.time)}</td><td>${s.steps}</td></tr>`;
+  }
+  html += '</tbody></table>';
+  document.getElementById('splitsList').innerHTML = html;
+}
+
+/* --------------------------
+   Motion
+-------------------------- */
+function handleMotion(e){
+  const acc=e.accelerationIncludingGravity||{x:0,y:0,z:0};
+  let mag=Math.sqrt((acc.x||0)**2+(acc.y||0)**2+(acc.z||0)**2);
+  let delta=Math.abs(mag-lastAccel); lastAccel=mag;
+  if(delta>1.2 && mag>9 && Date.now()-lastStepTime>300){
+    stepCount++; lastStepTime=Date.now();
+  }
+}
+
+/* --------------------------
+   Run control
+-------------------------- */
+document.getElementById('btnStart').onclick=startRun;
+document.getElementById('btnPause').onclick=pauseRun;
+document.getElementById('btnReset').onclick=resetRun;
+
+/* --------------------------
+   Screenshot — High-res all-tabs
+-------------------------- */
+document.getElementById('btnSave').onclick=captureAllTabsScreenshot;
+function captureAllTabsScreenshot(){
+  const container=document.body;
+  const tabs=document.querySelectorAll('.tab-content');
+  const displayBackup=[];
+  tabs.forEach((t,i)=>{ displayBackup[i]=t.style.display; t.style.display='block'; });
+
+  distanceChart.resize(); distanceChart.update();
+  timeChart.resize(); timeChart.update();
+  map.invalidateSize();
+
+  leafletImage(map, function(err,mapCanvas){
+    if(err){ console.error(err); return; }
+
+    const mapDiv=document.getElementById('map');
+    const originalMapDisplay=mapDiv.style.display;
+    mapDiv.style.display='none';
+    mapCanvas.id='mapCanvasTemp';
+    mapCanvas.style.width=mapDiv.offsetWidth+'px';
+    mapCanvas.style.height=mapDiv.offsetHeight+'px';
+    mapDiv.parentNode.insertBefore(mapCanvas,mapDiv);
+
+    html2canvas(container,{useCORS:true,allowTaint:true,scale:2}).then(canvas=>{
+      const a=document.createElement('a'); a.href=canvas.toDataURL(); a.download='run_summary.png'; a.click();
+      mapDiv.style.display=originalMapDisplay;
+      mapCanvas.remove();
+      tabs.forEach((t,i)=>t.style.display=displayBackup[i]);
+    });
+  });
+}
+
+/* --------------------------
+   Run functions: start/pause/reset and GPS
+-------------------------- */
+function startRun(){
+  if(running && paused){
+    paused=false; startTime=Date.now()-elapsed;
+    timer=setInterval(()=>{ elapsed=Date.now()-startTime; updateUIAll(); },1000);
+    setupMotionListener(); setupGeolocationWatch(); return;
+  }
+  running=true; paused=false; startTime=Date.now(); elapsed=0;
+  lastPos=null; lastUpdateTime=null; gpsDistance=0; blendedDistance=0;
+  prevBlendedDistance=0; prevElapsedTime=0; prevStepCount=0;
+  stepCount=0;
+  splits=[]; lastSplit=0; lastSplitTime=0;
+  estimatedStride=defaultStride;
+  elevationGain=0; lastAltitude=null; recentDistances=[];
+  path.setLatLngs([]);
+  distanceChart.data.labels=[]; distanceChart.data.datasets[0].data=[]; distanceChart.update();
+  timeChart.data.labels=[]; timeChart.data.datasets[0].data=[]; timeChart.update();
+  renderSplits(); updateUIAll();
+  setupMotionListener(); setupGeolocationWatch();
+  timer=setInterval(()=>{ elapsed=Date.now()-startTime; updateUIAll(); },1000);
+}
+function pauseRun(){ if(!running||paused) return; paused=true; clearInterval(timer); timer=null; removeMotionListener(); clearGeoWatch(); }
+function resetRun(){ running=false; paused=false; clearInterval(timer); timer=null; removeMotionListener(); clearGeoWatch();
+  lastPos=null; lastUpdateTime=null; gpsDistance=0; blendedDistance=0;
+  prevBlendedDistance=0; prevElapsedTime=0; prevStepCount=0;
+  stepCount=0; splits=[]; lastSplit=0; lastSplitTime=0; estimatedStride=defaultStride;
+  elevationGain=0; lastAltitude=null; recentDistances=[]; path.setLatLngs([]);
+  distanceChart.data.labels=[]; distanceChart.data.datasets[0].data=[]; distanceChart.update();
+  timeChart.data.labels=[]; timeChart.data.datasets[0].data=[]; timeChart.update();
+  updateUIAll(); renderSplits(); map.setView([20.5937,78.9629],5);
+
+  // remove marker/circle and reset map-info
+  if(gpsMarker){ map.removeLayer(gpsMarker); gpsMarker=null; }
+  if(accuracyCircle){ map.removeLayer(accuracyCircle); accuracyCircle=null; }
+  document.getElementById('gpsAccuracy').innerText='—';
+  document.getElementById('gpsStrength').innerText='—';
+  document.getElementById('gpsBadge').innerText='';
+  document.getElementById('gpsBadge').className='gps-badge';
+  document.getElementById('gpsPlace').innerText='—';
+}
+
+function setupMotionListener(){ try{ if(typeof DeviceMotionEvent!=='undefined' && typeof DeviceMotionEvent.requestPermission==='function'){ DeviceMotionEvent.requestPermission().then(res=>{ if(res==='granted') window.addEventListener('devicemotion', handleMotion); }); } else window.addEventListener('devicemotion', handleMotion); }catch(e){ console.warn(e); } }
+function removeMotionListener(){ try{ window.removeEventListener('devicemotion', handleMotion); }catch(e){} }
+function setupGeolocationWatch(){ if(!navigator.geolocation) return; if(watchId!==null){ try{ navigator.geolocation.clearWatch(watchId); }catch(e){} watchId=null; } watchId=navigator.geolocation.watchPosition(onPosition,onError,{enableHighAccuracy:true,maximumAge:1000,timeout:10000}); }
+function clearGeoWatch(){ if(watchId!==null && navigator.geolocation){ try{ navigator.geolocation.clearWatch(watchId); }catch(e){} watchId=null; }}
+
+/* --------------------------
+   Reverse geocode (Nominatim)
+-------------------------- */
+function reverseGeocode(lat, lon){
+  const now = Date.now();
+  if(now - lastReverseGeocodeTs < REVERSE_GEOCODE_MIN_MS) return; // basic throttle
+  lastReverseGeocodeTs = now;
+  // Nominatim reverse geocode (free/open). Keep requests limited.
+  const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}`;
+  fetch(url, { headers: { 'Accept': 'application/json' } })
+    .then(r=>r.ok? r.json() : Promise.reject('no-rev'))
+    .then(data=>{
+      let place = 'Unknown';
+      if(data && data.address){
+        // prefer city, town, village, then suburb/locality, then county
+        place = data.address.city || data.address.town || data.address.village || data.address.suburb || data.address.locality || data.address.county || data.display_name || 'Unknown';
+      } else if(data && data.display_name) place = data.display_name;
+      document.getElementById('gpsPlace').innerText = place;
+    }).catch(err=>{
+      // silently ignore reverse-geocode errors (rate-limits etc)
+      // console.warn('reverse geocode failed', err);
+    });
+}
+
+/* --------------------------
+   GPS / splits (improved precise 100m splits + interpolation)
+-------------------------- */
+function onPosition(pos){
+  const lat=pos.coords.latitude, lon=pos.coords.longitude, now=Date.now();
+
+  // Update map marker & accuracy circle & GPS UI
+  const acc = (typeof pos.coords.accuracy === 'number') ? pos.coords.accuracy : null;
+  updateMapLocation(lat, lon, acc);
+
+  // Reject very inaccurate readings (helps stop indoor drift)
+  if(typeof pos.coords.accuracy === 'number' && pos.coords.accuracy > MAX_ACCEPTABLE_ACCURACY_M){
+    // don't update lastPos — ignore this noisy sample entirely
+    // still show accuracy info on UI
+    document.getElementById('gpsAccuracy').innerText = (acc !== null ? acc.toFixed(1) : '—');
+    const st = getStrengthLabelFromAccuracy(acc);
+    document.getElementById('gpsStrength').innerText = st.label;
+    const badge = document.getElementById('gpsBadge');
+    badge.innerText = st.label;
+    badge.className = 'gps-badge ' + (st.cls || '');
+    return;
+  }
+
+  if(typeof pos.coords.altitude==='number'){
+    if(lastAltitude===null) lastAltitude=pos.coords.altitude;
+    if(pos.coords.altitude>lastAltitude) elevationGain+=pos.coords.altitude-lastAltitude;
+    lastAltitude=pos.coords.altitude;
+  }
+
+  if(!lastPos){
+    lastPos={lat,lon}; lastUpdateTime=now; path.addLatLng([lat,lon]);
+    map.setView([lat,lon],16); map.invalidateSize();
+    // initialize prev timing counters
+    prevBlendedDistance = blendedDistance;
+    prevElapsedTime = elapsed/1000;
+    prevStepCount = stepCount;
+    lastSplitTime = elapsed/1000;
+    // push a tiny recentDistances item so live-pace has consistent timeline
+    recentDistances.push({d:0, t:1, ts: now});
+    // update UI
+    document.getElementById('gpsAccuracy').innerText = (acc !== null ? acc.toFixed(1) : '—');
+    const st = getStrengthLabelFromAccuracy(acc);
+    document.getElementById('gpsStrength').innerText = st.label;
+    const badge = document.getElementById('gpsBadge');
+    badge.innerText = st.label;
+    badge.className = 'gps-badge ' + (st.cls || '');
+    reverseGeocode(lat, lon);
+    updateUIAll();
+    return;
+  }
+
+  // store previous snapshot for interpolation
+  prevBlendedDistance = blendedDistance;
+  prevElapsedTime = elapsed/1000;
+  prevStepCount = stepCount;
+
+  let d = haversine_m(lastPos.lat,lastPos.lon,lat,lon);
+  let deltaT = Math.max((now - lastUpdateTime)/1000, 0.001);
+  let speed = d / deltaT;
+
+  // filter out very small jitter or implausible jumps:
+  if(d < MIN_MOVE_THRESHOLD_M || speed > MAX_VALID_SPEED_MPS){
+    // treat as zero movement but keep timeline consistent to compute live pace
+    recentDistances.push({d:0, t: deltaT*1000, ts: now});
+    if(recentDistances.length>500) recentDistances.shift();
+    // update lastPos to current to avoid accumulating jitter from old point
+    lastPos = {lat,lon};
+    lastUpdateTime = now;
+    // still update UI so user sees stable values
+    document.getElementById('gpsAccuracy').innerText = (acc !== null ? acc.toFixed(1) : '—');
+    const st = getStrengthLabelFromAccuracy(acc);
+    document.getElementById('gpsStrength').innerText = st.label;
+    const badge = document.getElementById('gpsBadge');
+    badge.innerText = st.label;
+    badge.className = 'gps-badge ' + (st.cls || '');
+    // occasionally refresh place name
+    reverseGeocode(lat, lon);
+    updateUIAll();
+    return;
+  }
+
+  // update GPS distance & timestamps
+  gpsDistance += d;
+  lastPos = {lat,lon};
+  lastUpdateTime = now;
+  // <-- ADDED: append accepted point to the red path so line follows user
+  path.addLatLng([lat, lon]);
+
+  // estimate stride more robustly: simple smoothing using existing estimate and instantaneous
+  if(stepCount>0){
+    let instStride = gpsDistance/stepCount;
+    instStride = Math.max(0.3, Math.min(2.5, instStride));
+    estimatedStride = estimatedStride*0.85 + instStride*0.15;
+  } else {
+    estimatedStride = defaultStride;
+  }
+
+  // blendedDistance: choose sensible combination (prefer GPS but fallback to steps*stride)
+  blendedDistance = Math.max(gpsDistance, stepCount*estimatedStride);
+
+  // store recent distance segment for live pace window (in ms)
+  recentDistances.push({d: d, t: deltaT*1000, ts: now});
+  if(recentDistances.length>500) recentDistances.shift();
+
+  // PRECISE 100m split handling:
+  let prevDist = prevBlendedDistance;
+  let currDist = blendedDistance;
+  let currTime = elapsed/1000; // seconds
+  const segmentDist = currDist - prevDist;
+  const segmentTime = currTime - prevElapsedTime;
+  const segmentSteps = stepCount - prevStepCount;
+
+  if(segmentDist > 0.0001){
+    let nextTarget = Math.floor(lastSplit/100 + 1) * 100;
+    while(nextTarget <= Math.floor(currDist)){
+      const neededFromPrev = nextTarget - prevDist;
+      const ratio = Math.max(0, Math.min(1, neededFromPrev / segmentDist));
+      const splitAbsoluteTime = prevElapsedTime + ratio * segmentTime; // seconds
+      const stepsAtTarget = prevStepCount + Math.round(ratio * segmentSteps);
+      const splitDuration = Math.max(0.0001, splitAbsoluteTime - lastSplitTime);
+      const splitSteps = stepsAtTarget - (splits.length>0 ? splits[splits.length-1].cumulativeSteps || 0 : 0);
+      const cumulativeStepsAtTarget = stepsAtTarget;
+
+      splits.push({
+        m: nextTarget,
+        time: splitDuration, // SECONDS
+        steps: Math.max(0, splitSteps),
+        cumulativeSteps: cumulativeStepsAtTarget
+      });
+
+      // ensure UI updates show the new split
+      renderSplits();
+
+      // Update charts: pace for 100m split = splitDuration / 6 (min/km)
+      const paceMinPerKm = splitDuration / 6;
+      distanceChart.data.labels.push(nextTarget);
+      distanceChart.data.datasets[0].data.push(Number(paceMinPerKm.toFixed(2)));
+
+      timeChart.data.labels.push(Number((splitAbsoluteTime/60).toFixed(02)));
+      timeChart.data.datasets[0].data.push(Number(paceMinPerKm.toFixed(02)));
+
+      lastSplit = nextTarget;
+      lastSplitTime = splitAbsoluteTime;
+      nextTarget += 100;
+    }
+  }
+
+  distanceChart.update();
+  timeChart.update();
+  document.getElementById('gpsAccuracy').innerText = (acc !== null ? acc.toFixed(1) : '—');
+  const st = getStrengthLabelFromAccuracy(acc);
+  document.getElementById('gpsStrength').innerText = st.label;
+  const badge = document.getElementById('gpsBadge');
+  badge.innerText = st.label;
+  badge.className = 'gps-badge ' + (st.cls || '');
+  reverseGeocode(lat, lon);
+  updateUIAll();
+}
+
+function onError(e){ console.warn(e); }
+
+/* --------------------------
+   Map helpers: marker + accuracy circle
+-------------------------- */
+function updateMapLocation(lat, lon, accuracy){
+  // marker
+  if(!gpsMarker){
+    gpsMarker = L.circleMarker([lat,lon], { radius:6, color:'#0066cc', fillColor:'#fff', weight:2, fillOpacity:1 }).addTo(map);
+  } else {
+    gpsMarker.setLatLng([lat,lon]);
+  }
+  // accuracy circle in meters
+  if(accuracy && !isNaN(accuracy)){
+    if(!accuracyCircle){
+      accuracyCircle = L.circle([lat,lon], { radius: accuracy, color:'#3388ff', fillColor:'#3388ff', fillOpacity:0.08, weight:1 }).addTo(map);
+    } else {
+      accuracyCircle.setLatLng([lat,lon]);
+      accuracyCircle.setRadius(accuracy);
+    }
+  } else {
+    if(accuracyCircle){ map.removeLayer(accuracyCircle); accuracyCircle=null; }
+  }
+}
+
+/* --------------------------
+   Utilities
+-------------------------- */
+function haversine_m(lat1, lon1, lat2, lon2){
+  const R=6371000; const toRad=x=>x*Math.PI/180;
+  let dLat=toRad(lat2-lat1), dLon=toRad(lon2-lon1);
+  let a=Math.sin(dLat/2)**2+Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;
+  return R*2*Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+</script>
+</body>
+</html>
