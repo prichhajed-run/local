@@ -28,9 +28,9 @@ button.secondary { background:#6c757d; }
 .tab-content { background:#fff; border-radius:0 0 8px 8px; padding:10px; min-height:200px; border:1px solid #ddd; }
 .stats-row { display:flex; flex-wrap:wrap; gap:8px; justify-content:center; }
 .stat { min-width:110px; padding:8px 10px; border-radius:6px; background:#fafafa; font-size:14px; text-align:center; box-shadow:0 0 0 1px rgba(0,0,0,0.03) inset; }
-#splitsTable { width:100%; border-collapse:collapse; font-size:13px; }
-#splitsTable th, #splitsTable td { border:1px solid #eee; padding:8px; text-align:center; }
-#splitsTable th { background:#f3f3f3; font-weight:600; }
+#splitsTable, #timeSplitsTable { width:100%; border-collapse:collapse; font-size:13px; }
+#splitsTable th, #splitsTable td, #timeSplitsTable th, #timeSplitsTable td { border:1px solid #eee; padding:8px; text-align:center; }
+#splitsTable th, #timeSplitsTable th { background:#f3f3f3; font-weight:600; }
 .chart-wrap { width:100%; height:200px; margin-bottom:12px; }
 canvas.chart-canvas { width:100% !important; height:100% !important; display:block; }
 .gps-legend { font-size:12px; margin-top:6px; color:#333; }
@@ -58,7 +58,8 @@ canvas.chart-canvas { width:100% !important; height:100% !important; display:blo
 <div class="tabs">
   <div class="tab active" data-tab="stats">Stats</div>
   <div class="tab" data-tab="graphs">Graphs</div>
-  <div class="tab" data-tab="splits">Splits</div>
+  <div class="tab" data-tab="splits">Distance Splits</div>
+  <div class="tab" data-tab="timesplits">Time Splits</div>
 </div>
 
 <div id="stats" class="tab-content">
@@ -81,6 +82,10 @@ canvas.chart-canvas { width:100% !important; height:100% !important; display:blo
 
 <div id="splits" class="tab-content" style="display:none;">
   <div id="splitsList"><em>No splits yet</em></div>
+</div>
+
+<div id="timesplits" class="tab-content" style="display:none;">
+  <div id="timeSplitsList"><em>No time splits yet</em></div>
 </div>
 
 <!-- Scripts -->
@@ -132,6 +137,12 @@ let defaultStride=0.78, estimatedStride=defaultStride;
 let elevationGain=0, lastAltitude=null;
 let watchId=null;
 let recentDistances=[]; // stores {d (meters), t (ms), ts (timestamp ms)} for live pace by time-window
+
+// NEW: time splits state (per-minute)
+let timeSplits = [];
+let lastMinuteRecorded = 0; // minute index already recorded (0 = before any full minute)
+let lastTimeSplitTotalDist = 0; // meters at last minute mark
+let lastTimeSplitTotalSteps = 0; // steps at last minute mark
 
 // CONFIG: tuned to avoid indoors jitter
 const LIVE_PACE_WINDOW_SEC = 10; // compute live pace based on last 10 seconds
@@ -233,6 +244,9 @@ function updateUIAll(){
   document.getElementById('cadence').innerText=Math.round(elapsed>0?stepCount/(elapsed/60000):0);
   document.getElementById('stride').innerText=Math.round(stepCount>0?blendedDistance/stepCount*100:0);
   document.getElementById('elevation').innerText=Math.round(elevationGain);
+
+  // NEW: check and record time splits (per full minute)
+  handleTimeSplits();
 }
 
 function renderSplits(){
@@ -249,6 +263,25 @@ function renderSplits(){
   }
   html += '</tbody></table>';
   document.getElementById('splitsList').innerHTML = html;
+}
+
+/* --------------------------
+   Render Time Splits (NEW)
+-------------------------- */
+function renderTimeSplits(){
+  if(timeSplits.length===0){
+    document.getElementById('timeSplitsList').innerHTML='<em>No time splits yet</em>';
+    return;
+  }
+  let html = '<table id="timeSplitsTable"><thead><tr><th>Time</th><th>Avg Pace (min/km)</th><th>Steps</th></tr></thead><tbody>';
+  for(let i=0;i<timeSplits.length;i++){
+    const s = timeSplits[i];
+    const startSec = s.minuteStartSec;
+    const endSec = startSec + 59;
+    html += `<tr><td>${formatSeconds(startSec)} - ${formatSeconds(endSec)}</td><td>${s.pace>0?mmssFromMinutes(s.pace):'0:00'}</td><td>${s.steps}</td></tr>`;
+  }
+  html += '</tbody></table>';
+  document.getElementById('timeSplitsList').innerHTML = html;
 }
 
 /* --------------------------
@@ -326,6 +359,13 @@ function startRun(){
   renderSplits(); updateUIAll();
   setupMotionListener(); setupGeolocationWatch();
   timer=setInterval(()=>{ elapsed=Date.now()-startTime; updateUIAll(); },1000);
+
+  // NEW: initialize time splits markers
+  timeSplits = [];
+  lastMinuteRecorded = 0;
+  lastTimeSplitTotalDist = 0;
+  lastTimeSplitTotalSteps = 0;
+  renderTimeSplits();
 }
 function pauseRun(){ if(!running||paused) return; paused=true; clearInterval(timer); timer=null; removeMotionListener(); clearGeoWatch(); }
 function resetRun(){ running=false; paused=false; clearInterval(timer); timer=null; removeMotionListener(); clearGeoWatch();
@@ -345,6 +385,13 @@ function resetRun(){ running=false; paused=false; clearInterval(timer); timer=nu
   document.getElementById('gpsBadge').innerText='';
   document.getElementById('gpsBadge').className='gps-badge';
   document.getElementById('gpsPlace').innerText='—';
+
+  // NEW: reset time splits
+  timeSplits = [];
+  lastMinuteRecorded = 0;
+  lastTimeSplitTotalDist = 0;
+  lastTimeSplitTotalSteps = 0;
+  renderTimeSplits();
 }
 
 function setupMotionListener(){ try{ if(typeof DeviceMotionEvent!=='undefined' && typeof DeviceMotionEvent.requestPermission==='function'){ DeviceMotionEvent.requestPermission().then(res=>{ if(res==='granted') window.addEventListener('devicemotion', handleMotion); }); } else window.addEventListener('devicemotion', handleMotion); }catch(e){ console.warn(e); } }
@@ -569,6 +616,39 @@ function haversine_m(lat1, lon1, lat2, lon2){
   let a=Math.sin(dLat/2)**2+Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;
   return R*2*Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
+
+/* --------------------------
+   Time Splits: compute and record per-minute splits (NEW)
+   We record when a full minute boundary passes (e.g., at 60s, 120s, ...)
+   For each full minute we compute distance and steps in that minute and avg pace.
+-------------------------- */
+function handleTimeSplits(){
+  if(!running || paused) return;
+  // elapsed is in milliseconds in many places; ensure consistent seconds
+  const elapsedSec = Math.floor(elapsed/1000);
+  const currentMinute = Math.floor(elapsedSec/60); // 0 for 0-59s, 1 for 60-119s, etc.
+  // record for the minute that just completed
+  if(currentMinute > lastMinuteRecorded){
+    // minuteStart is lastMinuteRecorded*60 .. lastMinuteRecorded*60+59
+    const minuteStartSec = lastMinuteRecorded*60;
+    // Distance/steps traveled during that minute:
+    const distDelta = blendedDistance - lastTimeSplitTotalDist; // meters
+    const stepsDelta = stepCount - lastTimeSplitTotalSteps;
+    // avg pace during that minute in minutes per km
+    const paceMinPerKm = distDelta > 0 ? (60 / (distDelta/1000)) : 0; // min per km for that minute
+
+    timeSplits.push({ minuteStartSec: minuteStartSec, pace: paceMinPerKm, steps: stepsDelta, totalDist: blendedDistance, totalSteps: stepCount });
+
+    // update trackers
+    lastMinuteRecorded = currentMinute;
+    lastTimeSplitTotalDist = blendedDistance;
+    lastTimeSplitTotalSteps = stepCount;
+
+    renderTimeSplits();
+  }
+}
+
 </script>
 </body>
 </html>
+
