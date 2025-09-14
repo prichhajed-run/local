@@ -649,5 +649,24 @@ function handleTimeSplits(){
 }
 
 </script>
+  // --- Keep Screen Awake when tracking starts ---
+let wakeLock = null;
+
+async function enableWakeLock() {
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+    console.log('✅ Screen will stay awake');
+    wakeLock.addEventListener('release', () => {
+      console.log('⚠️ Wake lock released');
+    });
+  } catch (err) {
+    console.error(`WakeLock error: ${err.name}, ${err.message}`);
+  }
+}
+
+document.getElementById('startBtn').addEventListener('click', () => {
+  enableWakeLock();
+});
+
 </body>
 </html>
