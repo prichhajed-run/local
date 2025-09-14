@@ -273,12 +273,12 @@ function renderTimeSplits(){
     document.getElementById('timeSplitsList').innerHTML='<em>No time splits yet</em>';
     return;
   }
-  let html = '<table id="timeSplitsTable"><thead><tr><th>Time</th><th>Avg Pace (min/km)</th><th>Steps</th></tr></thead><tbody>';
+  let html = '<table id="timeSplitsTable"><thead><tr><th>Time (Minutes)</th><th>Avg Pace (min/km)</th><th>Steps</th></tr></thead><tbody>';
   for(let i=0;i<timeSplits.length;i++){
     const s = timeSplits[i];
-    const startSec = s.minuteStartSec;
-    const endSec = startSec + 59;
-    html += `<tr><td>${formatSeconds(startSec)} - ${formatSeconds(endSec)}</td><td>${s.pace>0?mmssFromMinutes(s.pace):'0:00'}</td><td>${s.steps}</td></tr>`;
+    // Row label as 1,2,3.. (minute count)
+    const minuteLabel = i+1;
+    html += `<tr><td>${minuteLabel}</td><td>${s.pace>0?mmssFromMinutes(s.pace):'0:00'}</td><td>${s.steps}</td></tr>`;
   }
   html += '</tbody></table>';
   document.getElementById('timeSplitsList').innerHTML = html;
@@ -651,4 +651,3 @@ function handleTimeSplits(){
 </script>
 </body>
 </html>
-
