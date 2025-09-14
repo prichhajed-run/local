@@ -647,9 +647,7 @@ function handleTimeSplits(){
     renderTimeSplits();
   }
 }
-
-</script>
-  // --- Keep Screen Awake when tracking starts ---
+    // --- Keep Screen Awake when tracking starts ---
 let wakeLock = null;
 
 async function enableWakeLock() {
@@ -667,6 +665,7 @@ async function enableWakeLock() {
 document.getElementById('startBtn').addEventListener('click', () => {
   enableWakeLock();
 });
+</script>
 
 </body>
 </html>
