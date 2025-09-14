@@ -366,8 +366,16 @@ function startRun(){
   lastTimeSplitTotalDist = 0;
   lastTimeSplitTotalSteps = 0;
   renderTimeSplits();
+
+  // REQUEST WAKE LOCK when starting
+  if (typeof navigator !== 'undefined' && 'wakeLock' in navigator) {
+    try { navigator.wakeLock.request('screen').then(lock => { window._wakeLock = lock; lock.addEventListener('release', ()=>{ console.log('Wake lock released'); }); }).catch(e=>{console.warn('Wake lock failed', e);}); } catch(e){console.warn('Wake lock error', e);}  
+  }
 }
-function pauseRun(){ if(!running||paused) return; paused=true; clearInterval(timer); timer=null; removeMotionListener(); clearGeoWatch(); }
+function pauseRun(){ if(!running||paused) return; paused=true; clearInterval(timer); timer=null; removeMotionListener(); clearGeoWatch(); 
+  // release wake lock on pause
+  if(window._wakeLock && typeof window._wakeLock.release === 'function'){ window._wakeLock.release().then(()=>{ window._wakeLock = null; }).catch(()=>{ window._wakeLock = null; }); }
+ }
 function resetRun(){ running=false; paused=false; clearInterval(timer); timer=null; removeMotionListener(); clearGeoWatch();
   lastPos=null; lastUpdateTime=null; gpsDistance=0; blendedDistance=0;
   prevBlendedDistance=0; prevElapsedTime=0; prevStepCount=0;
@@ -392,6 +400,9 @@ function resetRun(){ running=false; paused=false; clearInterval(timer); timer=nu
   lastTimeSplitTotalDist = 0;
   lastTimeSplitTotalSteps = 0;
   renderTimeSplits();
+
+  // release wake lock on reset
+  if(window._wakeLock && typeof window._wakeLock.release === 'function'){ window._wakeLock.release().then(()=>{ window._wakeLock = null; }).catch(()=>{ window._wakeLock = null; }); }
 }
 
 function setupMotionListener(){ try{ if(typeof DeviceMotionEvent!=='undefined' && typeof DeviceMotionEvent.requestPermission==='function'){ DeviceMotionEvent.requestPermission().then(res=>{ if(res==='granted') window.addEventListener('devicemotion', handleMotion); }); } else window.addEventListener('devicemotion', handleMotion); }catch(e){ console.warn(e); } }
@@ -559,7 +570,7 @@ function onPosition(pos){
       // Update charts: pace for 100m split = splitDuration / 6 (min/km)
       const paceMinPerKm = splitDuration / 6;
       distanceChart.data.labels.push(nextTarget);
-      distanceChart.data.datasets[0].data.push(Number(paceMinPerKm.toFixed(2)));
+      distanceChart.data.datasets[0].data.push(Number(paceMinPerKm.toFixed(02)));
 
       timeChart.data.labels.push(Number((splitAbsoluteTime/60).toFixed(02)));
       timeChart.data.datasets[0].data.push(Number(paceMinPerKm.toFixed(02)));
@@ -647,25 +658,43 @@ function handleTimeSplits(){
     renderTimeSplits();
   }
 }
-    // --- Keep Screen Awake when tracking starts ---
-let wakeLock = null;
 
-async function enableWakeLock() {
+/* --------------------------
+   Wake Lock helper (prevent screen sleep while running)
+-------------------------- */
+let _wakeLock = null;
+async function requestWakeLock() {
   try {
-    wakeLock = await navigator.wakeLock.request('screen');
-    console.log('✅ Screen will stay awake');
-    wakeLock.addEventListener('release', () => {
-      console.log('⚠️ Wake lock released');
-    });
+    if ('wakeLock' in navigator && !_wakeLock) {
+      _wakeLock = await navigator.wakeLock.request('screen');
+      _wakeLock.addEventListener('release', ()=>{ console.log('Wake lock released'); });
+      console.log('Wake lock acquired');
+    }
   } catch (err) {
-    console.error(`WakeLock error: ${err.name}, ${err.message}`);
+    console.warn('Could not acquire wake lock:', err && err.message ? err.message : err);
+  }
+}
+async function releaseWakeLock() {
+  try {
+    if(_wakeLock && typeof _wakeLock.release === 'function'){
+      await _wakeLock.release();
+    }
+  } catch(e) {
+    // ignore
+  } finally {
+    _wakeLock = null;
   }
 }
 
-document.getElementById('startBtn').addEventListener('click', () => {
-  enableWakeLock();
+// Re-acquire wake lock when visibility changes (some browsers release it when tab hidden)
+document.addEventListener('visibilitychange', async ()=>{
+  if(document.visibilityState === 'visible'){
+    if(running && !_wakeLock){
+      await requestWakeLock();
+    }
+  }
 });
-</script>
 
+</script>
 </body>
 </html>
