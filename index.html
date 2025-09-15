@@ -646,7 +646,9 @@ function handleTimeSplits(){
     const distDelta = blendedDistance - lastTimeSplitTotalDist; // meters
     const stepsDelta = stepCount - lastTimeSplitTotalSteps;
     // avg pace during that minute in minutes per km
-    const paceMinPerKm = distDelta > 0 ? (60 / (distDelta/1000)) : 0; // min per km for that minute
+    // FIXED: pace = 1 minute / (distance in km for that minute)
+    const distKm = distDelta / 1000;
+    const paceMinPerKm = distKm > 0 ? (1 / distKm) : 0; // min per km for that minute
 
     timeSplits.push({ minuteStartSec: minuteStartSec, pace: paceMinPerKm, steps: stepsDelta, totalDist: blendedDistance, totalSteps: stepCount });
 
@@ -698,3 +700,4 @@ document.addEventListener('visibilitychange', async ()=>{
 </script>
 </body>
 </html>
+
