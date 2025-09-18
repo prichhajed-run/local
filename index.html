@@ -696,49 +696,6 @@ document.addEventListener('visibilitychange', async ()=>{
     }
   }
 });
- /* --------------------------
-   Audio + Vibration Reminder every minute (self-contained)
--------------------------- */
-(function(){
-  let lastAnnouncedMinute = 0;
-
-  function speak(msg){
-    const utterance = new SpeechSynthesisUtterance(msg);
-    speechSynthesis.speak(utterance);
-  }
-
-  function vibrate(){
-    if(navigator.vibrate){
-      navigator.vibrate(200); // vibrate for 200ms
-    }
-  }
-
-  function checkAndAnnounce(){
-    if(!running || paused) return;
-    const elapsedSec = Math.floor(elapsed/1000);
-    const currentMinute = Math.floor(elapsedSec/60);
-    if(currentMinute > lastAnnouncedMinute){
-      lastAnnouncedMinute = currentMinute;
-
-      // Compute last minute stats
-      const distDelta = blendedDistance - lastTimeSplitTotalDist;
-      const stepsDelta = stepCount - lastTimeSplitTotalSteps;
-      const distKm = distDelta / 1000;
-      const paceMinPerKm = distKm > 0 ? (1 / distKm) : 0;
-
-      const msg = `Distance so far: ${blendedDistance.toFixed(0)} meters. Last minute pace: ${paceMinPerKm.toFixed(2)} min per km. Steps: ${stepsDelta}`;
-      speak(msg);
-      vibrate();
-
-      // Update trackers to match timeSplits
-      lastTimeSplitTotalDist = blendedDistance;
-      lastTimeSplitTotalSteps = stepCount;
-    }
-  }
-
-  setInterval(checkAndAnnounce, 1000); // check every second
-})();
-
 
 </script>
 </body>
