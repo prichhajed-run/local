@@ -696,6 +696,46 @@ document.addEventListener('visibilitychange', async ()=>{
     }
   }
 });
+  /* --------------------------
+   Audio + Vibration Reminder every minute
+-------------------------- */
+(function(){
+  function speak(msg){
+    const utterance = new SpeechSynthesisUtterance(msg);
+    speechSynthesis.speak(utterance);
+    if(navigator.vibrate){
+      navigator.vibrate(200); // short vibration
+    }
+  }
+
+  function announceProgress(){
+    const totalMeters = blendedDistance ? blendedDistance.toFixed(0) : 0;
+
+    // last minute split
+    let lastSplitDistance = 0;
+    let lastSplitPace = 0;
+    if(timeSplits.length > 0){
+      const last = timeSplits[timeSplits.length-1];
+      lastSplitDistance = last.totalDist - (timeSplits.length>1 ? timeSplits[timeSplits.length-2].totalDist : 0);
+      lastSplitPace = last.pace;
+    }
+
+    const msg = `Distance so far: ${totalMeters} meters. Last minute average pace: ${lastSplitPace>0?lastSplitPace.toFixed(2):'0'} minutes per kilometer.`;
+    speak(msg);
+  }
+
+  // Hook into handleTimeSplits to announce after recording each full minute
+  const originalHandleTimeSplits = handleTimeSplits;
+  handleTimeSplits = function(){
+    const beforeCount = timeSplits.length;
+    originalHandleTimeSplits();
+    const afterCount = timeSplits.length;
+    if(afterCount > beforeCount){
+      announceProgress();
+    }
+  };
+})();
+
 
 </script>
 </body>
