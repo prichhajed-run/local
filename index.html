@@ -696,45 +696,49 @@ document.addEventListener('visibilitychange', async ()=>{
     }
   }
 });
-  /* --------------------------
-   Audio + Vibration Reminder every minute
+ /* --------------------------
+   Audio + Vibration Reminder every minute (self-contained)
 -------------------------- */
 (function(){
+  let lastAnnouncedMinute = 0;
+
   function speak(msg){
     const utterance = new SpeechSynthesisUtterance(msg);
     speechSynthesis.speak(utterance);
+  }
+
+  function vibrate(){
     if(navigator.vibrate){
-      navigator.vibrate(200); // short vibration
+      navigator.vibrate(200); // vibrate for 200ms
     }
   }
 
-  function announceProgress(){
-    const totalMeters = blendedDistance ? blendedDistance.toFixed(0) : 0;
+  function checkAndAnnounce(){
+    if(!running || paused) return;
+    const elapsedSec = Math.floor(elapsed/1000);
+    const currentMinute = Math.floor(elapsedSec/60);
+    if(currentMinute > lastAnnouncedMinute){
+      lastAnnouncedMinute = currentMinute;
 
-    // last minute split
-    let lastSplitDistance = 0;
-    let lastSplitPace = 0;
-    if(timeSplits.length > 0){
-      const last = timeSplits[timeSplits.length-1];
-      lastSplitDistance = last.totalDist - (timeSplits.length>1 ? timeSplits[timeSplits.length-2].totalDist : 0);
-      lastSplitPace = last.pace;
+      // Compute last minute stats
+      const distDelta = blendedDistance - lastTimeSplitTotalDist;
+      const stepsDelta = stepCount - lastTimeSplitTotalSteps;
+      const distKm = distDelta / 1000;
+      const paceMinPerKm = distKm > 0 ? (1 / distKm) : 0;
+
+      const msg = `Distance so far: ${blendedDistance.toFixed(0)} meters. Last minute pace: ${paceMinPerKm.toFixed(2)} min per km. Steps: ${stepsDelta}`;
+      speak(msg);
+      vibrate();
+
+      // Update trackers to match timeSplits
+      lastTimeSplitTotalDist = blendedDistance;
+      lastTimeSplitTotalSteps = stepCount;
     }
-
-    const msg = `Distance so far: ${totalMeters} meters. Last minute average pace: ${lastSplitPace>0?lastSplitPace.toFixed(2):'0'} minutes per kilometer.`;
-    speak(msg);
   }
 
-  // Hook into handleTimeSplits to announce after recording each full minute
-  const originalHandleTimeSplits = handleTimeSplits;
-  handleTimeSplits = function(){
-    const beforeCount = timeSplits.length;
-    originalHandleTimeSplits();
-    const afterCount = timeSplits.length;
-    if(afterCount > beforeCount){
-      announceProgress();
-    }
-  };
+  setInterval(checkAndAnnounce, 1000); // check every second
 })();
+
 
 
 </script>
